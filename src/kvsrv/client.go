@@ -7,6 +7,7 @@ import "math/big"
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	clerkId int64
 }
 
 func nrand() int64 {
@@ -20,6 +21,7 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+	ck.clerkId = nrand() // a simple uuid, but int64
 	return ck
 }
 
@@ -36,9 +38,10 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
+	args := GetArgs{Key: key, ClerkId: ck.clerkId, OpId: nrand()}
+	reply := GetReply{}
 	for {
-		args := GetArgs{Key: key}
-		reply := GetReply{}
+		// reuse same args on retry, to identify duplicate
 		ok := ck.server.Call("KVServer.Get", &args, &reply)
 		if ok {
 			return reply.Value
@@ -56,9 +59,9 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
+	args := PutAppendArgs{Key: key, Value: value, ClerkId: ck.clerkId, OpId: nrand()}
+	reply := PutAppendReply{}
 	for {
-		args := PutAppendArgs{Key: key, Value: value}
-		reply := PutAppendReply{}
 		ok := ck.server.Call("KVServer."+op, &args, &reply)
 		if ok {
 			return reply.Value
