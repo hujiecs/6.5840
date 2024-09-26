@@ -20,11 +20,14 @@ package raft
 import (
 	//	"bytes"
 	// "fmt"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
+
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -125,6 +128,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -145,6 +156,22 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		panic("Failed to read persist data")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
+
 }
 
 // the service says it has created a snapshot that has
@@ -245,6 +272,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 
+		rf.persist()
+
 		//  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 		if args.LeaderCommit > rf.commitIndex {
 			min := args.LeaderCommit
@@ -283,6 +312,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		//fmt.Printf("[%s] Vote granted from %d to %d\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		rf.resetElectionTimeout()
 	}
 
@@ -355,6 +385,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		rf.log = append(rf.log, LogEntry{Command: command, Term: term})
 		index = len(rf.log)
+		rf.persist()
 		// fmt.Printf("[%s] Append command %v to Node %d\n", time.Now().Format("2001-01-01 00:00:00.000"), command, rf.me)
 	}
 
@@ -409,6 +440,7 @@ func (rf *Raft) startElection() {
 	rf.state = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.resetElectionTimeout()
 
 	//fmt.Printf("[%s] Node %d start election for term %d\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, rf.currentTerm)
@@ -475,6 +507,7 @@ func (rf *Raft) becomeFollower(term int) {
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1
+	rf.persist()
 	rf.resetElectionTimeout()
 	//fmt.Printf("[%s] %d becomeFollower, term: %d\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, rf.currentTerm)
 }
