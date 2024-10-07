@@ -258,21 +258,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if index <= len(rf.log) && rf.log[index-1].Term != entry.Term {
 				// fmt.Printf("[%s] AppendEntries %d -> %d truncated log len from %d -> %d\n", time.Now().Format("2001-01-01 00:00:00.000"), args.LeaderId, rf.me, len(rf.log), index)
 				rf.log = rf.log[:index-1]
+				rf.persist()
 				break
 			}
 		}
 
 		// Append any new entries not already in the log
-		// should we start from index where above conflict happens?
-		for i, entry := range args.Entries {
+		for i := range args.Entries {
 			index := args.PrevLogIndex + i + 1
 			if index > len(rf.log) {
 				// fmt.Printf("[%s] AppendEntries %d append entry %v to log\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, entry)
-				rf.log = append(rf.log, entry)
+				rf.log = append(rf.log, args.Entries[i:]...)
+				rf.persist()
+				break
 			}
 		}
-
-		rf.persist()
 
 		//  If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 		if args.LeaderCommit > rf.commitIndex {
@@ -281,8 +281,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				min = len(rf.log)
 			}
 			rf.commitIndex = min
-			// fmt.Printf("[%s] AppendEntries Follower %d start to apply commited entry\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me)
-			go rf.ApplyCommitedEntry()
 		}
 
 		rf.resetElectionTimeout()
@@ -427,6 +425,14 @@ func (rf *Raft) ticker() {
 			// If election timeout elapses without receiving AppendEntriesRPC from current leader or granting vote to candidate: convert to candidate
 			//fmt.Printf("[%s] ticker %d electionTimeout: %v, time since heartbeat: %v\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, rf.electionTimeout, time.Since(rf.lastHeartbeat))
 			rf.startElection()
+		}
+
+		if rf.commitIndex > rf.lastApplied {
+			lastApplied := rf.lastApplied
+			entries := rf.log[rf.lastApplied:rf.commitIndex]
+			// fmt.Printf("[%s] Node %d entries to apply: %v, indexs [%d - %d]\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, entries, rf.lastApplied, rf.commitIndex-1)
+			rf.lastApplied = rf.commitIndex
+			go rf.ApplyEntries(entries, lastApplied)
 		}
 
 		rf.mu.Unlock()
@@ -590,7 +596,6 @@ func (rf *Raft) sendHeartBeats() {
 			rf.matchIndex[peer] = newNextIndex - 1
 
 			// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4)
-			commitIndexChanged := false
 			for N := rf.commitIndex + 1; N <= len(rf.log); N++ {
 				if rf.log[N-1].Term != rf.currentTerm {
 					continue
@@ -605,36 +610,21 @@ func (rf *Raft) sendHeartBeats() {
 
 				if count > len(rf.peers)/2 {
 					rf.commitIndex = N
-					commitIndexChanged = true
 				}
-			}
-
-			if commitIndexChanged {
-				// fmt.Printf("[%s] AppendEntries Leader %d start to apply commited entry\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me)
-				go rf.ApplyCommitedEntry()
 			}
 		}(peer)
 	}
 }
 
-func (rf *Raft) ApplyCommitedEntry() {
-	rf.mu.Lock()
-	var entries []LogEntry
-	lastApplied := rf.lastApplied
-	if rf.commitIndex > rf.lastApplied {
-		entries = rf.log[rf.lastApplied:rf.commitIndex]
-		rf.lastApplied = rf.commitIndex
-	}
-	rf.mu.Unlock()
-
-	// fmt.Printf("[%s] ApplyCommitedEntry entries to apply: %v\n", time.Now().Format("2001-01-01 00:00:00.000"), entries)
+// call with mu locked
+func (rf *Raft) ApplyEntries(entries []LogEntry, lastApplied int) {
 	for i, entry := range entries {
-		// fmt.Printf("[%s] ApplyCommitedEntry Node %d apply entry %v with index %d\n", time.Now().Format("2001-01-01 00:00:00.000"), rf.me, entry.Command, lastApplied+i+1)
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      entry.Command,
 			CommandIndex: lastApplied + i + 1,
 		}
+		// fmt.Printf("Node %d apply command %v command index: %d\n", rf.me, entry.Command, lastApplied+i+1)
 	}
 }
 
