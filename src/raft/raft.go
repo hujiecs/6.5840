@@ -533,6 +533,13 @@ func (rf *Raft) becomeLeader() {
 func (rf *Raft) sendHeartBeats() {
 	// save term so it won't change for all heartbeats
 	leaderTerm := rf.currentTerm
+	commitIndex := rf.commitIndex
+	// Avoid data race if leader append new log. When snapshot enabled, suppose three nodes:
+	// at time-0, leader 0 send log to follower 1, success and updated commitIndex
+	// at time-1, leader 0 applied up to commitIndex, snapshot and shorten log
+	// at time-2, leader 0 send log to follower 2, log is shorten, cannot send enough log
+	logCopy := make([]LogEntry, len(rf.log))
+	copy(logCopy, rf.log)
 	for peer := range rf.peers {
 		if peer == rf.me {
 			continue
@@ -543,12 +550,16 @@ func (rf *Raft) sendHeartBeats() {
 			nextIndex := rf.nextIndex[peer]
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := -1
-			if prevLogIndex > 0 {
-				prevLogTerm = rf.log[prevLogIndex-1].Term
+
+			entryIndex := nextIndex - 1
+			if entryIndex >= 1 {
+				prevLogTerm = logCopy[entryIndex-1].Term
 			}
-			// Avoid data race if leader append new log
-			entries := make([]LogEntry, len(rf.log[nextIndex-1:]))
-			copy(entries, rf.log[nextIndex-1:])
+
+			var entries []LogEntry
+			if entryIndex >= 0 {
+				entries = logCopy[entryIndex:]
+			}
 
 			args := &AppendEntriesArgs{
 				Term:         leaderTerm,
@@ -556,11 +567,11 @@ func (rf *Raft) sendHeartBeats() {
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
 				Entries:      entries,
-				LeaderCommit: rf.commitIndex,
+				LeaderCommit: commitIndex,
 			}
 			rf.mu.Unlock()
 
-			Log("Node %d sendHeartBeats to %d, nextIndex: %d, prevLogIndex:%d, loglen: %d, payload: %v", rf.me, peer, nextIndex, prevLogIndex, len(rf.log), args)
+			Log("Node %d sendHeartBeats to %d, nextIndex: %d, prevLogIndex:%d, loglen: %d, payload: %v", rf.me, peer, nextIndex, prevLogIndex, len(logCopy), args)
 			reply := &AppendEntriesReply{}
 			response_ok := rf.sendAppendEntries(peer, args, reply)
 
